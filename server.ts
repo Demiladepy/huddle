@@ -1,7 +1,10 @@
 import "dotenv/config"
 import express from "express"
-import { readFileSync, writeFileSync, existsSync } from "node:fs"
+import { readFileSync, writeFileSync, existsSync, renameSync } from "node:fs"
 import { randomUUID } from "node:crypto"
+import { AsyncLocalStorage } from "node:async_hooks"
+import { lookup } from "node:dns/promises"
+import { homedir } from "node:os"
 import {
 	defineRuntime,
 	RuntimeState,
@@ -20,16 +23,26 @@ import {
 
 // ───────────────────────────── config ─────────────────────────────
 const PORT = Number(process.env.PORT ?? 3000)
-const MODEL = process.env.MODEL ?? "gpt-5.4-mini"
-const LIVE_AI = Boolean(process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY)
+const HAS_OPENAI = Boolean(process.env.OPENAI_API_KEY)
+const HAS_ANTHROPIC = Boolean(process.env.ANTHROPIC_API_KEY)
+const HAS_GEMINI = Boolean(process.env.GEMINI_API_KEY)
+const LIVE_AI = HAS_OPENAI || HAS_ANTHROPIC || HAS_GEMINI
+// Pick a default model that matches whichever provider key is present.
+const MODEL =
+	process.env.MODEL ?? (HAS_OPENAI ? "gpt-5.4-mini" : HAS_ANTHROPIC ? "claude-sonnet-4-6" : HAS_GEMINI ? "gemini-3.5-flash" : "gpt-5.4-mini")
 const SPACE_EMAIL = process.env.SPACE_EMAIL ?? "crew@huddle.space"
 const DATA_FILE = process.env.DATA_FILE ?? "./data.json"
+const CLOUD_PAIRED = Boolean(process.env.MOZAIK_API_KEY || process.env.MOZAIK_PROJECT_KEY || existsSync(`${homedir()}/.mozaik/credentials.json`))
 
 // ───────────────────────────── space store ─────────────────────────────
 type Kind = "note" | "poll" | "bring" | "expense" | "link" | "reply" | "mail"
 type Card = { id: string; kind: Kind; x: number; y: number; by: string; createdAt: number; data: any }
 type Activity = { id: string; at: number; who: string; role: "human" | "agent" | "system"; kind: string; text: string }
 type Space = { name: string; email: string; members: string[]; cards: Card[]; activity: Activity[] }
+type Mail = { from: string; subject: string; text: string }
+// Each agent loop carries the mail it is working on, so two forwards landing at
+// once can't overwrite each other's context between think() and a tool call.
+const mailContext = new AsyncLocalStorage<Mail>()
 
 function seed(): Space {
 	return {
@@ -49,14 +62,25 @@ let space: Space = existsSync(DATA_FILE) ? JSON.parse(readFileSync(DATA_FILE, "u
 let saveTimer: NodeJS.Timeout | undefined
 function persist() {
 	clearTimeout(saveTimer)
-	saveTimer = setTimeout(() => writeFileSync(DATA_FILE, JSON.stringify(space, null, 2)), 300)
+	saveTimer = setTimeout(() => {
+		// Write-then-rename so a crash mid-write cannot truncate the space.
+		const tmp = `${DATA_FILE}.tmp`
+		writeFileSync(tmp, JSON.stringify(space, null, 2))
+		renameSync(tmp, DATA_FILE)
+	}, 300)
 }
 
 // ───────────────────────────── live sync (SSE) ─────────────────────────────
 const clients = new Set<express.Response>()
 function broadcast(type: string, data: unknown) {
 	const line = `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`
-	for (const c of clients) c.write(line)
+	for (const c of clients) {
+		try {
+			c.write(line)
+		} catch {
+			clients.delete(c)
+		}
+	}
 }
 function upsertCard(card: Card) {
 	const i = space.cards.findIndex((c) => c.id === card.id)
@@ -85,16 +109,18 @@ function setStatus(name: string, state: string, detail = "") {
 
 // place new agent-made cards in a free-ish spot on the right of the board
 // two lanes: mail that lands on the left, what the agents made of it on the right
+const LANE_HEIGHT: Record<Kind, number> = { note: 160, poll: 210, bring: 210, expense: 245, reply: 258, link: 345, mail: 275 }
+const LANE_GAP = 14
 let lanes = { mail: 40, out: 40 }
 for (const c of space.cards) {
-	if (c.x === 600) lanes.mail = Math.max(lanes.mail, c.y + 250)
-	if (c.x === 870) lanes.out = Math.max(lanes.out, c.y + 270)
+	const lane = c.x === 560 ? "mail" : c.x === 820 ? "out" : null
+	if (lane) lanes[lane] = Math.max(lanes[lane], c.y + (LANE_HEIGHT[c.kind] ?? 260) + LANE_GAP)
 }
-function nextSpot(lane: "mail" | "out" = "out") {
+function nextSpot(lane: "mail" | "out" = "out", kind: Kind = "note") {
 	const y = lanes[lane]
-	lanes[lane] += lane === "mail" ? 250 : 270
+	lanes[lane] = y + (LANE_HEIGHT[kind] ?? 260) + LANE_GAP
 	if (lanes[lane] > 2000) lanes[lane] = 40
-	return { x: lane === "mail" ? 600 : 870, y }
+	return { x: lane === "mail" ? 560 : 820, y }
 }
 
 // ───────────────────────────── ledger ─────────────────────────────
@@ -180,10 +206,11 @@ const clerkTools: Tool[] = [
 			const payer = matchMember(a.payer) ?? a.payer
 			if (!space.members.includes(payer)) space.members.push(payer)
 			const splitAmong = (a.split_among?.length ? a.split_among : space.members).map((m: string) => matchMember(m) ?? m)
-			const card: Card = { id: randomUUID(), kind: "expense", ...nextSpot(), by: "Clerk", createdAt: Date.now(), data: { description: a.description, amount: Number(a.amount), currency: a.currency || "$", payer, splitAmong, reason: a.reason, from: currentMail?.from } }
+			const source = mailContext.getStore()
+			const card: Card = { id: randomUUID(), kind: "expense", ...nextSpot("out", "expense"), by: "Clerk", createdAt: Date.now(), data: { description: a.description, amount: Number(a.amount), currency: a.currency || "$", payer, splitAmong, reason: a.reason, from: source?.from } }
 			upsertCard(card)
 			broadcast("members", space.members)
-			sendEvent(SemanticEvent.create("expense.filed", clerk.getId(), { card, replyTo: currentMail?.from, subject: currentMail?.subject }), clerk.getId())
+			sendEvent(SemanticEvent.create("expense.filed", clerk.getId(), { card, replyTo: source?.from, subject: source?.subject }), clerk.getId())
 			return { ok: true, cardId: card.id }
 		},
 	),
@@ -193,7 +220,7 @@ const clerkTools: Tool[] = [
 		{ title: str("Short title"), body: str("Note body, concise"), reason: str("Why it was pinned") },
 		["title", "body", "reason"],
 		async (a) => {
-			upsertCard({ id: randomUUID(), kind: "note", ...nextSpot(), by: "Clerk", createdAt: Date.now(), data: { title: a.title, body: a.body, color: "blue", reason: a.reason } })
+			upsertCard({ id: randomUUID(), kind: "note", ...nextSpot("out", "note"), by: "Clerk", createdAt: Date.now(), data: { title: a.title, body: a.body, color: "blue", reason: a.reason } })
 			return { ok: true }
 		},
 	),
@@ -203,7 +230,7 @@ const clerkTools: Tool[] = [
 		{ question: str("The question"), options: { type: "array", items: { type: "string" }, description: "2-5 options" } },
 		["question", "options"],
 		async (a) => {
-			upsertCard({ id: randomUUID(), kind: "poll", ...nextSpot(), by: "Clerk", createdAt: Date.now(), data: { question: a.question, options: a.options.slice(0, 5).map((label: string) => ({ id: randomUUID(), label, votes: [] })) } })
+			upsertCard({ id: randomUUID(), kind: "poll", ...nextSpot("out", "poll"), by: "Clerk", createdAt: Date.now(), data: { question: a.question, options: a.options.slice(0, 5).map((label: string) => ({ id: randomUUID(), label, votes: [] })) } })
 			return { ok: true }
 		},
 	),
@@ -214,7 +241,7 @@ const clerkTools: Tool[] = [
 		["items"],
 		async (a) => {
 			let list = space.cards.find((c) => c.kind === "bring")
-			if (!list) list = { id: randomUUID(), kind: "bring", ...nextSpot(), by: "Clerk", createdAt: Date.now(), data: { title: "Who's bringing what", items: [] } }
+			if (!list) list = { id: randomUUID(), kind: "bring", ...nextSpot("out", "bring"), by: "Clerk", createdAt: Date.now(), data: { title: "Who's bringing what", items: [] } }
 			for (const label of a.items) list.data.items.push({ id: randomUUID(), label, claimedBy: null })
 			upsertCard(list)
 			return { ok: true }
@@ -236,9 +263,10 @@ const clerk = createAgent({
 			processor: {
 				apply({ event, participant }) {
 					const mail = event.payload as Mail
-					currentMail = mail
-					if (!LIVE_AI) return fallbackClerk(mail)
-					think(participant as Agent, `Members: ${space.members.join(", ")}.\nFrom: ${mail.from}\nSubject: ${mail.subject}\n\n${mail.text}`)
+					mailContext.run(mail, () => {
+						if (!LIVE_AI) return fallbackClerk(mail)
+						think(participant as Agent, `Members: ${space.members.join(", ")}.\nFrom: ${mail.from}\nSubject: ${mail.subject}\n\n${mail.text}`)
+					})
 				},
 			},
 		},
@@ -260,7 +288,7 @@ const treasurer = createAgent({
 			{ to: str("Recipient name or email"), subject: str("Subject line"), body: str("Plain text body") },
 			["to", "subject", "body"],
 			async (a) => {
-				upsertCard({ id: randomUUID(), kind: "reply", ...nextSpot(), by: "Treasurer", createdAt: Date.now(), data: { to: a.to, subject: a.subject, body: a.body, from: SPACE_EMAIL } })
+				upsertCard({ id: randomUUID(), kind: "reply", ...nextSpot("out", "reply"), by: "Treasurer", createdAt: Date.now(), data: { to: a.to, subject: a.subject, body: a.body, from: SPACE_EMAIL } })
 				return { sent: true }
 			},
 		),
@@ -284,14 +312,83 @@ const treasurer = createAgent({
 })
 
 // ── The Scout: reads any link that lands in the space and turns it into a card worth arguing about.
-async function readUrl(url: string) {
+const MAX_PAGE_BYTES = 200_000
+
+function isPrivateAddress(host: string) {
+	const h = host.toLowerCase().replace(/^\[|\]$/g, "")
+	if (h.includes(":")) {
+		return h === "::1" || h === "::" || h.startsWith("fc") || h.startsWith("fd") || h.startsWith("fe80") || h.startsWith("::ffff:127.")
+	}
+	const parts = h.split(".").map(Number)
+	if (parts.length !== 4 || parts.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return false
+	const [a, b] = parts
+	return (
+		a === 0 ||
+		a === 10 ||
+		a === 127 ||
+		(a === 169 && b === 254) ||
+		(a === 172 && b >= 16 && b <= 31) ||
+		(a === 192 && b === 168) ||
+		(a === 100 && b >= 64 && b <= 127) ||
+		(a === 198 && (b === 18 || b === 19))
+	)
+}
+
+// The inbox is open to the internet, so the Scout must not be usable as a
+// proxy into localhost, private networks, or cloud metadata endpoints.
+async function assertPublicUrl(raw: string) {
+	let url: URL
 	try {
-		const ctrl = new AbortController()
-		const t = setTimeout(() => ctrl.abort(), 8000)
-		const res = await fetch(url, { signal: ctrl.signal, headers: { "user-agent": "Mozilla/5.0 HuddleScout" } })
-		clearTimeout(t)
-		const html = await res.text()
-		const title = html.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() ?? url
+		url = new URL(raw)
+	} catch {
+		throw new Error("That does not look like a URL")
+	}
+	if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("Only http(s) links can be read")
+	if (url.hostname === "localhost" || url.hostname.endsWith(".local") || url.hostname.endsWith(".internal") || isPrivateAddress(url.hostname)) {
+		throw new Error("That link points inside a private network")
+	}
+	const addresses = await lookup(url.hostname, { all: true }).catch(() => [])
+	if (addresses.some((a) => isPrivateAddress(a.address))) throw new Error("That link resolves to a private address")
+	return url
+}
+
+async function readCapped(res: Response) {
+	if (!res.body) return ""
+	const reader = res.body.getReader()
+	const decoder = new TextDecoder()
+	let out = ""
+	let size = 0
+	while (size < MAX_PAGE_BYTES) {
+		const { done, value } = await reader.read()
+		if (done) break
+		size += value.byteLength
+		out += decoder.decode(value, { stream: true })
+	}
+	reader.cancel().catch(() => {})
+	return out
+}
+
+async function readUrl(raw: string) {
+	try {
+		let url = await assertPublicUrl(raw)
+		let res: Response | undefined
+		// Follow a few redirects ourselves so every hop is validated.
+		for (let hop = 0; hop < 3; hop++) {
+			const ctrl = new AbortController()
+			const t = setTimeout(() => ctrl.abort(), 8000)
+			res = await fetch(url, { signal: ctrl.signal, redirect: "manual", headers: { "user-agent": "Mozilla/5.0 HuddleScout" } })
+			clearTimeout(t)
+			const location = res.headers.get("location")
+			if (res.status >= 300 && res.status < 400 && location) {
+				url = await assertPublicUrl(new URL(location, url).toString())
+				continue
+			}
+			break
+		}
+		if (!res) throw new Error("No response")
+		if (!res.ok) throw new Error(`The page answered ${res.status}`)
+		const html = await readCapped(res)
+		const title = html.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() ?? url.toString()
 		const text = html
 			.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, " ")
 			.replace(/<[^>]+>/g, " ")
@@ -301,7 +398,7 @@ async function readUrl(url: string) {
 			.slice(0, 6000)
 		return { title, text }
 	} catch (e) {
-		return { title: url, text: `Could not read the page (${String(e)}). Work from the URL alone.` }
+		return { title: raw, text: `Could not read the page (${String(e)}). Work from the URL alone.` }
 	}
 }
 const scout = createAgent({
@@ -318,7 +415,7 @@ const scout = createAgent({
 			{ url: str("URL"), title: str("Page title"), summary: str("2 sentence summary"), questions: { type: "array", items: { type: "string" }, description: "Exactly two questions" } },
 			["url", "title", "summary", "questions"],
 			async (a) => {
-				upsertCard({ id: randomUUID(), kind: "link", ...nextSpot(), by: "Scout", createdAt: Date.now(), data: { url: a.url, title: a.title, summary: a.summary, questions: a.questions.slice(0, 2) } })
+				upsertCard({ id: randomUUID(), kind: "link", ...nextSpot("out", "link"), by: "Scout", createdAt: Date.now(), data: { url: a.url, title: a.title, summary: a.summary, questions: a.questions.slice(0, 2) } })
 				return { ok: true }
 			},
 		),
@@ -411,9 +508,6 @@ join(treasurer)
 join(scout)
 for (const a of [clerk, treasurer, scout]) setStatus(nameOf(a.getId()), "idle")
 
-type Mail = { from: string; subject: string; text: string }
-let currentMail: Mail | undefined
-
 function matchMember(name?: string) {
 	if (!name) return undefined
 	const n = name.toLowerCase().split(/[\s@<]/)[0]
@@ -429,12 +523,17 @@ async function fallbackClerk(mail: Mail) {
 	const amount = Number(m?.[2] ?? 0)
 	const cur = (mail.text.match(/[$₦€£]/) ?? ["$"])[0]
 	const t = clerkTools.find((t) => t.name === (amount ? "file_expense" : "file_note"))!
-	setStatus("Clerk", "using tool", t.name)
 	const args = amount
 		? { description: mail.subject.replace(/^(fwd?|re):\s*/i, ""), amount, currency: cur, payer: matchMember(mail.from) ?? mail.from, reason: "Looks like a receipt, so it went to expenses." }
 		: { title: mail.subject, body: mail.text.slice(0, 280), reason: "Info the group should see." }
+	if (!amount && /https?:\/\//.test(mail.text)) {
+		// A link-only forward belongs to the Scout. Don't pretend the Clerk filed it.
+		setStatus("Clerk", "idle")
+		return
+	}
+	setStatus("Clerk", "using tool", t.name)
 	log("Clerk", "agent", "tool", `${t.name}(${shorten(JSON.stringify(args))})`)
-	if (!/https?:\/\//.test(mail.text) || amount) await t.invoke(args)
+	await t.invoke(args)
 	setStatus("Clerk", "idle")
 }
 async function fallbackTreasurer(agent: Agent, card: Card, replyTo: string | undefined, share: number) {
@@ -464,10 +563,20 @@ process.on("unhandledRejection", (err) => {
 
 // ───────────────────────────── HTTP ─────────────────────────────
 const app = express()
-app.use(express.json({ limit: "1mb" }))
-app.use(express.static("public"))
+app.disable("x-powered-by")
+app.use(express.json({ limit: "256kb" }))
+app.use(express.static("public", { maxAge: "1h" }))
+// One-link demo: auto-joins as Ada and fires the receipt+link race.
+app.get("/demo", (_req, res) => res.sendFile(`${process.cwd()}/public/index.html`))
 
-app.get("/api/space", (_req, res) => res.json({ ...space, balances: balances(), status: agentStatus, liveAI: LIVE_AI, model: MODEL }))
+const CARD_KINDS = new Set<Kind>(["note", "poll", "bring", "link"])
+const clean = (value: unknown, max: number) => String(value ?? "").trim().slice(0, max)
+
+app.get("/healthz", (_req, res) =>
+	res.json({ ok: true, uptime: Math.round(process.uptime()), cards: space.cards.length, clients: clients.size, liveAI: LIVE_AI, model: MODEL, cloud: CLOUD_PAIRED }),
+)
+
+app.get("/api/space", (_req, res) => res.json({ ...space, balances: balances(), status: agentStatus, liveAI: LIVE_AI, model: MODEL, cloud: CLOUD_PAIRED }))
 
 app.get("/api/events", (req, res) => {
 	res.set({ "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" })
@@ -482,7 +591,7 @@ app.get("/api/events", (req, res) => {
 })
 
 app.post("/api/join", (req, res) => {
-	const name = String(req.body?.name ?? "Guest").trim().slice(0, 24) || "Guest"
+	const name = clean(req.body?.name, 24) || "Guest"
 	humanFor(name)
 	res.json({ ok: true, members: space.members })
 })
@@ -494,36 +603,51 @@ function humanEvent(by: string, type: string, payload: any) {
 }
 
 app.post("/api/cards", (req, res) => {
-	const { kind, x, y, by, data } = req.body
-	const card: Card = { id: randomUUID(), kind, x: x ?? 60, y: y ?? 60, by: by ?? "Guest", createdAt: Date.now(), data }
-	if (kind === "poll") card.data.options = (data.options ?? []).filter(Boolean).map((label: string) => ({ id: randomUUID(), label, votes: [] }))
-	if (kind === "bring") card.data.items = (data.items ?? []).filter(Boolean).map((label: string) => ({ id: randomUUID(), label, claimedBy: null }))
+	const { kind, x, y, data } = req.body ?? {}
+	const by = clean(req.body?.by, 24) || "Guest"
+	if (!CARD_KINDS.has(kind)) return res.status(400).json({ error: "Unknown card kind" })
+	if (!data || typeof data !== "object") return res.status(400).json({ error: "Missing card data" })
+	const card: Card = {
+		id: randomUUID(),
+		kind,
+		x: Number.isFinite(Number(x)) ? Math.max(0, Math.round(Number(x))) : 60,
+		y: Number.isFinite(Number(y)) ? Math.max(0, Math.round(Number(y))) : 60,
+		by,
+		createdAt: Date.now(),
+		data,
+	}
+	if (kind === "poll") card.data.options = (data.options ?? []).filter(Boolean).slice(0, 6).map((label: string) => ({ id: randomUUID(), label: clean(label, 80), votes: [] }))
+	if (kind === "bring") card.data.items = (data.items ?? []).filter(Boolean).slice(0, 20).map((label: string) => ({ id: randomUUID(), label: clean(label, 80), claimedBy: null }))
 	if (kind === "link") {
+		const url = clean(data.url, 2048)
+		if (!/^https?:\/\//i.test(url)) return res.status(400).json({ error: "Only http(s) links" })
 		// the Scout turns a dropped link into the real card
-		log(card.by, "human", "card", `${card.by} dropped a link`)
-		humanEvent(card.by, "link.dropped", { url: data.url })
+		log(by, "human", "card", `${by} dropped a link`)
+		humanEvent(by, "link.dropped", { url })
 		return res.json({ ok: true })
 	}
 	upsertCard(card)
-	log(card.by, "human", "card", `${card.by} added a ${kind}`)
-	humanEvent(card.by, "card.added", { kind })
+	log(by, "human", "card", `${by} added a ${kind}`)
+	humanEvent(by, "card.added", { kind })
 	res.json(card)
 })
 
 app.post("/api/cards/:id/move", (req, res) => {
 	const c = space.cards.find((c) => c.id === req.params.id)
 	if (!c) return res.sendStatus(404)
-	c.x = Math.max(0, Math.round(req.body.x))
-	c.y = Math.max(0, Math.round(req.body.y))
+	if (!Number.isFinite(Number(req.body?.x)) || !Number.isFinite(Number(req.body?.y))) return res.status(400).json({ error: "x and y must be numbers" })
+	c.x = Math.max(0, Math.round(Number(req.body.x)))
+	c.y = Math.max(0, Math.round(Number(req.body.y)))
 	persist()
-	broadcast("move", { id: c.id, x: c.x, y: c.y, by: req.body.by })
+	broadcast("move", { id: c.id, x: c.x, y: c.y, by: clean(req.body?.by, 24) })
 	res.json({ ok: true })
 })
 
 app.post("/api/cards/:id/vote", (req, res) => {
 	const c = space.cards.find((c) => c.id === req.params.id && c.kind === "poll")
 	if (!c) return res.sendStatus(404)
-	const { optionId, by } = req.body
+	const { optionId } = req.body ?? {}
+	const by = clean(req.body?.by, 24) || "Guest"
 	for (const o of c.data.options) o.votes = o.votes.filter((v: string) => v !== by)
 	const opt = c.data.options.find((o: any) => o.id === optionId)
 	if (opt) opt.votes.push(by)
@@ -536,7 +660,8 @@ app.post("/api/cards/:id/vote", (req, res) => {
 app.post("/api/cards/:id/claim", (req, res) => {
 	const c = space.cards.find((c) => c.id === req.params.id && c.kind === "bring")
 	if (!c) return res.sendStatus(404)
-	const { itemId, by } = req.body
+	const { itemId } = req.body ?? {}
+	const by = clean(req.body?.by, 24) || "Guest"
 	const it = c.data.items.find((i: any) => i.id === itemId)
 	if (it) it.claimedBy = it.claimedBy === by ? null : by
 	upsertCard(c)
@@ -552,9 +677,14 @@ app.delete("/api/cards/:id", (req, res) => {
 
 // The space's inbox. Point a real inbound-email webhook here, or use the "Forward to the space" box.
 app.post("/api/inbox", (req, res) => {
-	const mail: Mail = { from: String(req.body.from ?? "someone"), subject: String(req.body.subject ?? "(no subject)"), text: String(req.body.text ?? "") }
+	const mail: Mail = {
+		from: clean(req.body?.from, 120) || "someone",
+		subject: clean(req.body?.subject, 200) || "(no subject)",
+		text: clean(req.body?.text, 20_000),
+	}
+	if (!mail.text) return res.status(400).json({ error: "Mail needs some text" })
 	resolveRuntime().state.inboxCount++
-	upsertCard({ id: randomUUID(), kind: "mail", ...nextSpot("mail"), by: mail.from, createdAt: Date.now(), data: mail })
+	upsertCard({ id: randomUUID(), kind: "mail", ...nextSpot("mail", "mail"), by: mail.from, createdAt: Date.now(), data: mail })
 	sendEvent(SemanticEvent.create("inbox.received", mailroom.getId(), mail), mailroom.getId())
 	res.json({ ok: true })
 })
@@ -567,8 +697,32 @@ app.post("/api/reset", (_req, res) => {
 	res.json({ ok: true })
 })
 
-app.listen(PORT, () => {
+app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+	if (err?.type === "entity.parse.failed") return res.status(400).json({ error: "Invalid JSON body" })
+	if (err?.type === "entity.too.large") return res.status(413).json({ error: "Body too large" })
+	console.error("[http]", err)
+	res.status(500).json({ error: "Something went wrong" })
+})
+
+const server = app.listen(PORT, () => {
 	console.log(`\n  Huddle running → http://localhost:${PORT}`)
 	console.log(`  Agents: Clerk, Treasurer, Scout + Ticker observer on one Mozaik runtime`)
-	console.log(`  AI: ${LIVE_AI ? `live (${MODEL})` : "OFFLINE fallback — set OPENAI_API_KEY in .env for real agents"}\n`)
+	console.log(`  AI: ${LIVE_AI ? `live (${MODEL})` : "OFFLINE fallback — set OPENAI_API_KEY in .env for real agents"}`)
+	console.log(`  Cloud: ${CLOUD_PAIRED ? "paired — loops stream to app.jigjoy.ai" : "not paired — run npm run pair to watch agents live"}\n`)
 })
+
+let closing = false
+function shutdown() {
+	if (closing) return
+	closing = true
+	clearTimeout(saveTimer)
+	try {
+		writeFileSync(`${DATA_FILE}.tmp`, JSON.stringify(space, null, 2))
+		renameSync(`${DATA_FILE}.tmp`, DATA_FILE)
+	} catch {}
+	for (const c of clients) c.end()
+	server.close(() => process.exit(0))
+	setTimeout(() => process.exit(0), 3000).unref()
+}
+process.on("SIGINT", shutdown)
+process.on("SIGTERM", shutdown)

@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: huddle
+    runtime: docker
+    plan: free
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: MODEL
+        value: gpt-5.4-mini
+      # Render's free filesystem is ephemeral. Point DATA_FILE at a mounted
+      # disk (or swap in a database) if you need the board to survive deploys.
+      - key: DATA_FILE
+        value: /tmp/huddle-data.json

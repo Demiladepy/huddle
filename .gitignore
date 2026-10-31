@@ -1,3 +1,9 @@
 node_modules
 .env
+.env.local
 data.json
+data.json.tmp
+coverage
+.DS_Store
+*.log
+.mozaik

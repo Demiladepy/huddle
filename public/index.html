@@ -30,6 +30,11 @@
   .tools { display: flex; gap: 6px; }
   .tools button { background: var(--card); border: 1.5px solid var(--ink); border-radius: 10px; padding: 6px 11px; font-weight: 600; font-size: 14px; box-shadow: 2px 2px 0 var(--ink); }
   .tools button:active { transform: translate(2px, 2px); box-shadow: none; }
+  .tools button.ghost { box-shadow: none; border-style: dashed; color: var(--muted); }
+  .conn { width: 9px; height: 9px; border-radius: 50%; background: #bbb; flex: 0 0 auto; }
+  .conn.on { background: var(--ok); box-shadow: 0 0 0 3px rgba(31,157,85,.15); }
+  .conn.off { background: var(--accent); }
+  button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2.5px solid var(--accent); outline-offset: 2px; }
 
   .board-wrap { overflow: auto; position: relative; background-image: radial-gradient(var(--line) 1.2px, transparent 1.2px); background-size: 22px 22px; }
   .board { position: relative; width: 1700px; height: 1100px; }
@@ -96,12 +101,28 @@
   dialog input, dialog textarea { width: 100%; font: inherit; border: 1.5px solid var(--ink); border-radius: 9px; padding: 8px 10px; margin: 6px 0; background: var(--paper); }
   .toast { position: fixed; bottom: 18px; left: 18px; background: var(--ink); color: var(--paper); padding: 8px 14px; border-radius: 10px; font-size: 14px; opacity: 0; transition: opacity .3s; pointer-events: none; }
   .toast.on { opacity: 1; }
+  .empty { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; }
+  .empty div { text-align: center; color: var(--muted); font-size: 15px; line-height: 1.6; }
+  .empty b { display: block; font-size: 20px; color: var(--ink); margin-bottom: 4px; }
+
+  @media (max-width: 980px) {
+    .app { grid-template-columns: 1fr; grid-template-rows: auto minmax(46vh, 1fr) auto; height: auto; min-height: 100vh; }
+    header { flex-wrap: wrap; gap: 10px; }
+    .presence { margin-left: 0; }
+    aside { border-left: 0; border-top: 1.5px solid var(--ink); }
+    .board { width: 1400px; height: 900px; }
+    .feed { max-height: 260px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; }
+  }
 </style>
 </head>
 <body>
 <div class="app">
   <header>
     <div class="logo">huddle<span>.</span></div>
+    <span class="conn" id="conn" title="Live sync" aria-label="Live sync status"></span>
     <div class="space-name" id="spaceName">…</div>
     <button class="email" id="email" title="Copy the space's email">…</button>
     <div class="tools">
@@ -109,11 +130,12 @@
       <button data-add="poll">+ Poll</button>
       <button data-add="bring">+ Bring list</button>
       <button data-add="link">+ Link</button>
+      <button class="ghost" id="reset" title="Reset the demo space">↺ Reset</button>
     </div>
     <div class="presence" id="presence"></div>
   </header>
 
-  <div class="board-wrap"><div class="board" id="board"></div></div>
+  <div class="board-wrap"><div class="board" id="board"></div><div class="empty" id="empty"><div><b>Your group's page is empty.</b>Forward a receipt, drop a link, or add a note.<br>The agents in the room will file it while you watch.</div></div></div>
 
   <aside>
     <section>
@@ -130,13 +152,14 @@
         <button class="chip" data-sample="receipt">🧾 cake receipt</button>
         <button class="chip" data-sample="link">🔗 a link</button>
         <button class="chip" data-sample="plan">🗓 a plan</button>
+        <button class="chip" data-sample="burst">⚡ both at once</button>
       </div>
     </section>
     <section>
       <h2>Who owes whom</h2>
       <div class="ledger" id="ledger"></div>
     </section>
-    <div class="feed" id="feed"></div>
+    <div class="feed" id="feed" aria-live="polite" aria-label="Activity feed"></div>
   </aside>
 </div>
 
@@ -153,18 +176,29 @@
   <div class="row" style="margin-top:8px"><button class="primary" id="addGo">Add to space</button><button class="chip" id="addCancel">Cancel</button></div>
 </dialog>
 
-<div class="toast" id="toast"></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <script>
 const $ = (s, r = document) => r.querySelector(s)
 const board = $("#board")
+const params = new URLSearchParams(location.search)
 let me = null
 try { me = localStorage.getItem("huddle.name") } catch {}
-const state = { cards: new Map(), members: [], status: {}, balances: {} }
+if (params.get("name")) {
+  me = params.get("name").slice(0, 24)
+  try { localStorage.setItem("huddle.name", me) } catch {}
+}
+const demoMode = params.get("demo") === "1" || location.pathname === "/demo"
+if (demoMode && !me) {
+  me = "Ada"
+  try { localStorage.setItem("huddle.name", me) } catch {}
+}
+const state = { cards: new Map(), members: [], status: {}, balances: {}, cloud: false }
 const AGENTS = { Clerk: { face: "🗂", job: "files everything that lands in the inbox" }, Treasurer: { face: "🧮", job: "splits costs, emails people back" }, Scout: { face: "🔭", job: "reads links, starts arguments" } }
 const COLORS = ["#ffb4a2", "#b8e0d2", "#ffd97d", "#c3b1e1", "#9ad1f5", "#f7a8c8"]
 const colorFor = (n) => COLORS[[...n].reduce((a, c) => a + c.charCodeAt(0), 0) % COLORS.length]
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]))
+const safeUrl = (u) => { try { const x = new URL(u); return ["http:", "https:"].includes(x.protocol) ? u : "#" } catch { return "#" } }
 const api = (path, body, method = "POST") => fetch(path, { method, headers: { "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined }).then((r) => r.json())
 const toast = (t) => { const el = $("#toast"); el.textContent = t; el.classList.add("on"); clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.remove("on"), 2200) }
 const ago = (t) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
@@ -184,7 +218,7 @@ function body(c) {
       return `<span class="tag agent">filed by Clerk</span><h3 style="margin-top:6px">${esc(d.description)}</h3><div class="amount">${esc(d.currency)}${esc(d.amount)}</div><p>Paid by <b>${esc(d.payer)}</b> · ${esc(d.currency)}${share} each (${d.splitAmong.length})</p><div class="slip">📎 ${esc(d.reason)}</div>`
     }
     case "reply": return `<span class="tag agent">sent by Treasurer</span><h3 style="margin-top:6px">${esc(d.subject)}</h3><p style="font-size:12px;color:var(--muted)">to ${esc(d.to)} · from ${esc(d.from)}</p><p style="margin-top:6px">${esc(d.body)}</p>`
-    case "link": return `<span class="tag agent">read by Scout</span><h3 style="margin-top:6px">${esc(d.title)}</h3><p>${esc(d.summary ?? "Scout is reading…")}</p>${(d.questions ?? []).map((q) => `<div class="q">${esc(q)}</div>`).join("")}<p style="margin-top:6px"><a href="${esc(d.url)}" target="_blank" rel="noopener" style="font-size:12px;color:var(--ink)">${esc(d.url)}</a></p>`
+    case "link": return `<span class="tag agent">read by Scout</span><h3 style="margin-top:6px">${esc(d.title)}</h3><p>${esc(d.summary ?? "Scout is reading…")}</p>${(d.questions ?? []).map((q) => `<div class="q">${esc(q)}</div>`).join("")}<p style="margin-top:6px"><a href="${esc(safeUrl(d.url))}" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:var(--ink)">${esc(d.url)}</a></p>`
     case "mail": return `<span class="tag">📨 mail in</span><h3 style="margin-top:6px">${esc(d.subject)}</h3><p style="font-size:12px;color:var(--muted)">from ${esc(d.from)}</p><p style="font-family:var(--mono);font-size:12px;margin-top:6px;max-height:110px;overflow:hidden">${esc(d.text)}</p>`
   }
   return ""
@@ -198,11 +232,16 @@ function renderCard(c, { fresh = false } = {}) {
     if (fresh) el.classList.add("fresh")
     wireDrag(el, c.id)
   }
-  if (c.kind === "link" && !c.data.summary) return el.remove() // human link stubs: Scout posts the real card
+  if (c.kind === "link" && !c.data.summary) { el.remove(); updateEmpty(); return }
   el.className = `card ${c.kind} ${c.data.color ?? ""} ${el.classList.contains("fresh") ? "fresh" : ""}`
   if (!el.classList.contains("dragging")) { el.style.left = c.x + "px"; el.style.top = c.y + "px" }
   if (fresh && c.kind !== "mail") setTimeout(() => el.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" }), 50)
   el.innerHTML = `<div class="grip"><span>${esc(c.by)} · ${c.kind}</span><button class="x" data-del title="Remove">×</button></div>` + body(c)
+  updateEmpty()
+}
+function updateEmpty() {
+  const visible = [...state.cards.values()].filter((c) => !(c.kind === "link" && !c.data.summary))
+  $("#empty").style.display = visible.length ? "none" : "grid"
 }
 
 // ── interactions on cards
@@ -261,23 +300,24 @@ async function load() {
   board.innerHTML = ""; state.cards.clear(); $("#feed").innerHTML = ""
   $("#spaceName").textContent = s.name
   $("#email").textContent = s.email
-  $("#mode").textContent = s.liveAI ? `live · ${s.model}` : "offline mode"
-  state.members = s.members; state.status = s.status; state.balances = s.balances
+  $("#mode").textContent = (s.liveAI ? `live · ${s.model}` : "offline mode") + (s.cloud ? " · ☁ paired" : "")
+  state.members = s.members; state.status = s.status; state.balances = s.balances; state.cloud = s.cloud
   for (const c of s.cards) { state.cards.set(c.id, c); renderCard(c) }
   s.activity.forEach(addActivity)
-  renderAgents(); renderLedger(); renderPresence()
+  renderAgents(); renderLedger(); renderPresence(); updateEmpty()
 }
 function connect() {
   const es = new EventSource("/api/events")
+  es.onopen = () => { $("#conn").className = "conn on"; $("#conn").title = "Live sync connected" }
   es.addEventListener("card", (e) => { const c = JSON.parse(e.data); const isNew = !state.cards.has(c.id); state.cards.set(c.id, c); renderCard(c, { fresh: isNew }); refreshLedger() })
-  es.addEventListener("card.removed", (e) => { const { id } = JSON.parse(e.data); state.cards.delete(id); document.getElementById("c-" + id)?.remove(); refreshLedger() })
+  es.addEventListener("card.removed", (e) => { const { id } = JSON.parse(e.data); state.cards.delete(id); document.getElementById("c-" + id)?.remove(); updateEmpty(); refreshLedger() })
   es.addEventListener("move", (e) => { const m = JSON.parse(e.data); if (m.by === me) return; const el = document.getElementById("c-" + m.id); if (el && !el.classList.contains("dragging")) { el.classList.add("remote"); el.style.left = m.x + "px"; el.style.top = m.y + "px" } })
   es.addEventListener("activity", (e) => addActivity(JSON.parse(e.data)))
   es.addEventListener("status", (e) => { const s = JSON.parse(e.data); state.status[s.name] = s; renderAgents() })
   es.addEventListener("members", (e) => { state.members = JSON.parse(e.data); renderPresence() })
   es.addEventListener("ledger", (e) => { state.balances = JSON.parse(e.data); renderLedger() })
   es.addEventListener("reset", load)
-  es.onerror = () => { es.close(); setTimeout(() => { load().then(connect) }, 1500) }
+  es.onerror = () => { $("#conn").className = "conn off"; es.close(); setTimeout(() => { load().then(connect) }, 1500) }
 }
 function refreshLedger() { api("/api/space", null, "GET").then((s) => { state.balances = s.balances; renderLedger() }) }
 
@@ -287,7 +327,22 @@ const SAMPLES = {
   link: () => ({ subject: "we should go here after", text: "https://en.wikipedia.org/wiki/Karaoke" }),
   plan: () => ({ subject: "plan for saturday", text: "Party at Tunde's, 14 Akin Close. Arrive 6pm, Kemi gets there 7. Someone needs to bring ice and cups. Are we doing jollof or fried rice?" }),
 }
-document.querySelectorAll("[data-sample]").forEach((b) => b.onclick = () => { const s = SAMPLES[b.dataset.sample](); $("#mFrom").value = me; $("#mSubject").value = s.subject; $("#mText").value = s.text })
+document.querySelectorAll("[data-sample]").forEach((b) => b.onclick = async () => {
+  if (b.dataset.sample === "burst") {
+    const r = SAMPLES.receipt()
+    const who = me || "Ada"
+    await Promise.all([
+      api("/api/inbox", { from: who, subject: r.subject, text: r.text }),
+      api("/api/inbox", { from: who, subject: "we should go here after", text: "https://en.wikipedia.org/wiki/Karaoke" }),
+    ])
+    toast("Two forwards at once — Clerk and Scout are racing")
+    return
+  }
+  const s = SAMPLES[b.dataset.sample]()
+  $("#mFrom").value = me
+  $("#mSubject").value = s.subject
+  $("#mText").value = s.text
+})
 $("#send").onclick = async () => {
   const mail = { from: $("#mFrom").value || me, subject: $("#mSubject").value || "(no subject)", text: $("#mText").value }
   if (!mail.text.trim()) return toast("Paste something first")
@@ -295,7 +350,20 @@ $("#send").onclick = async () => {
   $("#mSubject").value = ""; $("#mText").value = ""
   toast("Sent — watch the agents")
 }
-$("#email").onclick = () => { navigator.clipboard?.writeText($("#email").textContent); toast("Space email copied") }
+$("#email").onclick = async () => {
+  const text = $("#email").textContent
+  try {
+    await navigator.clipboard.writeText(text)
+    toast("Space email copied")
+  } catch {
+    toast(text)
+  }
+}
+$("#reset").onclick = async () => {
+  if (!confirm("Reset the demo space? Every card and the ledger will be cleared.")) return
+  await api("/api/reset", {})
+  toast("Space reset")
+}
 
 // ── adding cards
 const FORMS = {
@@ -330,7 +398,15 @@ async function join(name) { me = name; try { localStorage.setItem("huddle.name",
 $("#nameGo").onclick = async () => { const n = $("#nameInput").value.trim(); if (!n) return; await join(n); $("#nameDlg").close() }
 $("#nameInput").addEventListener("keydown", (e) => e.key === "Enter" && $("#nameGo").click())
 
-load().then(connect).then(() => { if (me) join(me); else $("#nameDlg").showModal() })
+load().then(connect).then(async () => {
+  if (me) await join(me)
+  else $("#nameDlg").showModal()
+  // /demo and ?demo=1 give judges a one-link, self-running demo.
+  if (demoMode) {
+    setTimeout(() => document.querySelector('[data-sample="burst"]')?.click(), 500)
+    setTimeout(() => { const w = $(".board-wrap"); if (w) { w.scrollLeft = 0; w.scrollTop = 0 } }, 9000)
+  }
+})
 </script>
 </body>
 </html>

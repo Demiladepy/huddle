@@ -6,7 +6,15 @@
   "scripts": {
     "start": "tsx server.ts",
     "dev": "tsx watch server.ts",
-    "pair": "npx @mozaik-ai/cloud-sdk pair"
+    "pair": "mozaik-cloud pair",
+    "demo": "node scripts/demo.mjs",
+    "shot": "node scripts/screenshot.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test test/huddle.test.mjs",
+    "check": "npm run typecheck && npm test"
+  },
+  "engines": {
+    "node": ">=22"
   },
   "license": "MIT",
   "dependencies": {
