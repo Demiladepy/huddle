@@ -6,6 +6,8 @@
 [![Node](https://img.shields.io/badge/node-%3E%3D22-1f9d55)](https://nodejs.org)
 [![License](https://img.shields.io/badge/license-MIT-ff5a36)](LICENSE)
 
+> **JigJoy × NTP Novi Sad 2026 Hackathon — Freestyle track.**
+
 ![Huddle board](docs/huddle.png)
 
 Group chats scroll away. Twelve messages to pick a cake, and the receipt is gone by dinner. Huddle is one shared page: move cards, vote, claim what you're bringing — everyone sees it as it happens. The space also has an email address. Forward the cake receipt and the agents take it from there:
@@ -61,6 +63,13 @@ npm run pair
 It prints a short code and an approve link. Open it in the browser where you're signed in to [app.jigjoy.ai](https://app.jigjoy.ai), click **Approve device**, and the credential lands in `~/.mozaik/credentials.json`. Restart Huddle and the header switches to `live · <model> · ☁ paired`.
 
 On `@mozaik-ai/core` 4.x, every `runLoop`, inference step and tool call is already streamed to the cloud; Huddle does **not** add a second exporter, so each loop appears once. You can also paste `MOZAIK_API_KEY` into `.env` instead of pairing.
+
+<p align="center">
+  <img src="docs/mozaik-cloud.png" alt="Clerk, Scout and Treasurer with their loop counts on Mozaik Cloud" width="49%" />
+  <img src="docs/mozaik-loops.png" alt="Clerk loop history with duration, inference and tool counts" width="49%" />
+</p>
+
+The same demo run in the cloud: three agents, 22 loops, every inference and tool call timed. Clerk's history shows each forward's duration (3–8s), inference count and tool calls — the trace judges can inspect loop by loop.
 
 ---
 
@@ -167,7 +176,9 @@ With no provider key, Huddle runs offline. With no Mozaik credential, it simply 
 
 ## Deploy
 
-**Render** — the repo includes a Docker blueprint:
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/Demiladepy/huddle)
+
+**Render** — the repo includes a Docker blueprint. The button above starts the same flow:
 
 1. New → Blueprint → pick this repo (`render.yaml`).
 2. Set `OPENAI_API_KEY` when prompted (or leave it blank for offline mode).
