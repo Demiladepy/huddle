@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Huddle — one page for your group</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --paper: #f6f1e7; --ink: #1d1a16; --muted: #7a7166; --line: #e3dacb;
+    --card: #fffdf8; --yellow: #ffe58a; --blue: #cfe4ff; --pink: #ffd3cc; --green: #c9efd3; --violet: #e4d9ff;
+    --accent: #ff5a36; --ok: #1f9d55; --think: #e8a317;
+    --display: "Bricolage Grotesque", ui-sans-serif, system-ui, sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--paper); color: var(--ink); font-family: var(--display); }
+  button { font: inherit; cursor: pointer; }
+  .app { display: grid; grid-template-columns: 1fr 380px; grid-template-rows: auto 1fr; height: 100vh; }
+
+  header { grid-column: 1 / -1; display: flex; align-items: center; gap: 18px; padding: 14px 22px; border-bottom: 1.5px solid var(--ink); background: var(--paper); }
+  .logo { font-weight: 800; font-size: 26px; letter-spacing: -0.03em; }
+  .logo span { color: var(--accent); }
+  .space-name { font-weight: 600; font-size: 18px; }
+  .email { font-family: var(--mono); font-size: 12.5px; background: var(--ink); color: var(--paper); padding: 5px 10px; border-radius: 999px; border: 0; }
+  .email:hover { background: var(--accent); }
+  .presence { display: flex; margin-left: auto; }
+  .avatar { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; font-size: 13px; font-weight: 800; border: 2px solid var(--paper); margin-left: -8px; }
+  .tools { display: flex; gap: 6px; }
+  .tools button { background: var(--card); border: 1.5px solid var(--ink); border-radius: 10px; padding: 6px 11px; font-weight: 600; font-size: 14px; box-shadow: 2px 2px 0 var(--ink); }
+  .tools button:active { transform: translate(2px, 2px); box-shadow: none; }
+
+  .board-wrap { overflow: auto; position: relative; background-image: radial-gradient(var(--line) 1.2px, transparent 1.2px); background-size: 22px 22px; }
+  .board { position: relative; width: 1700px; height: 1100px; }
+
+  .card { position: absolute; width: 240px; background: var(--card); border: 1.5px solid var(--ink); border-radius: 14px; box-shadow: 3px 3px 0 var(--ink); padding: 12px 14px 12px; user-select: none; transition: box-shadow .15s, transform .15s; }
+  .card.dragging { box-shadow: 8px 8px 0 var(--ink); transform: rotate(-1.2deg); z-index: 50; }
+  .card.remote { transition: left .25s ease, top .25s ease; }
+  .card.fresh { animation: pop .5s cubic-bezier(.2,1.6,.4,1); }
+  @keyframes pop { from { transform: scale(.6) rotate(-6deg); opacity: 0; } to { transform: none; opacity: 1; } }
+  .card .grip { display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: var(--muted); font-family: var(--mono); cursor: grab; margin-bottom: 6px; }
+  .card .grip .x { border: 0; background: none; color: var(--muted); font-size: 14px; padding: 0 2px; }
+  .card h3 { margin: 0 0 6px; font-size: 18px; line-height: 1.15; letter-spacing: -0.01em; }
+  .card p { margin: 0; font-size: 14px; line-height: 1.4; white-space: pre-wrap; }
+  .card.note.yellow { background: var(--yellow); } .card.note.blue { background: var(--blue); }
+  .card.expense { background: var(--green); }
+  .card.reply { background: var(--violet); }
+  .card.link { background: var(--pink); }
+  .card.mail { background: #fff; border-style: dashed; }
+  .tag { display: inline-block; font-family: var(--mono); font-size: 10.5px; padding: 2px 7px; border-radius: 999px; background: var(--ink); color: var(--paper); }
+  .tag.agent { background: var(--accent); }
+
+  .opt { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; background: rgba(255,255,255,.6); border: 1.5px solid var(--ink); border-radius: 9px; padding: 6px 9px; margin-top: 6px; position: relative; overflow: hidden; font-size: 14px; }
+  .opt .bar { position: absolute; inset: 0 auto 0 0; background: var(--yellow); z-index: 0; transition: width .4s; }
+  .opt > * { position: relative; z-index: 1; }
+  .opt .n { margin-left: auto; font-family: var(--mono); font-size: 12px; }
+  .opt.mine { font-weight: 800; }
+  .item { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px dashed var(--line); font-size: 14px; }
+  .item button { border: 1.5px solid var(--ink); background: var(--card); border-radius: 999px; font-size: 12px; padding: 2px 10px; }
+  .item button.taken { background: var(--ink); color: var(--paper); }
+  .amount { font-size: 30px; font-weight: 800; letter-spacing: -0.03em; }
+  .slip { margin-top: 8px; font-family: var(--mono); font-size: 11.5px; background: rgba(255,255,255,.55); border: 1px dashed var(--ink); border-radius: 8px; padding: 6px 8px; }
+  .q { margin-top: 6px; font-size: 13.5px; font-weight: 600; }
+  .q::before { content: "↳ "; color: var(--accent); }
+
+  aside { border-left: 1.5px solid var(--ink); display: flex; flex-direction: column; min-height: 0; background: var(--card); }
+  aside section { padding: 14px 18px; border-bottom: 1.5px solid var(--ink); }
+  aside h2 { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); display: flex; justify-content: space-between; }
+  .agents { display: grid; gap: 8px; }
+  .ag { display: grid; grid-template-columns: 34px 1fr; gap: 10px; align-items: center; }
+  .ag .face { width: 34px; height: 34px; border-radius: 10px; border: 1.5px solid var(--ink); display: grid; place-items: center; font-size: 17px; background: var(--paper); position: relative; }
+  .ag .face::after { content: ""; position: absolute; right: -4px; bottom: -4px; width: 11px; height: 11px; border-radius: 50%; border: 2px solid var(--card); background: #bbb; }
+  .ag.thinking .face::after, .ag.reading .face::after { background: var(--think); animation: pulse 1s infinite; }
+  .ag.using .face::after { background: var(--accent); animation: pulse .6s infinite; }
+  .ag.idle .face::after { background: var(--ok); }
+  @keyframes pulse { 50% { transform: scale(1.5); opacity: .5; } }
+  .ag b { font-size: 15px; } .ag small { display: block; font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .compose input, .compose textarea { width: 100%; font: inherit; font-size: 14px; border: 1.5px solid var(--ink); border-radius: 9px; padding: 7px 9px; background: var(--paper); margin-bottom: 6px; }
+  .compose textarea { height: 74px; resize: vertical; font-family: var(--mono); font-size: 12.5px; }
+  .row { display: flex; gap: 6px; flex-wrap: wrap; }
+  .primary { background: var(--accent); color: #fff; border: 1.5px solid var(--ink); border-radius: 9px; padding: 7px 14px; font-weight: 800; box-shadow: 2px 2px 0 var(--ink); }
+  .chip { background: var(--paper); border: 1.5px dashed var(--ink); border-radius: 999px; padding: 3px 10px; font-size: 12px; }
+  .ledger div { display: flex; justify-content: space-between; font-family: var(--mono); font-size: 13px; padding: 2px 0; }
+  .pos { color: var(--ok); } .neg { color: var(--accent); }
+  .feed { flex: 1; overflow: auto; padding: 10px 18px; min-height: 120px; }
+  .ev { font-size: 12.5px; padding: 5px 0; border-bottom: 1px solid var(--line); line-height: 1.35; animation: slide .3s; }
+  @keyframes slide { from { opacity: 0; transform: translateX(10px); } }
+  .ev .who { font-weight: 800; } .ev.agent .who { color: var(--accent); }
+  .ev.tool { font-family: var(--mono); font-size: 11.5px; }
+  .ev time { float: right; color: var(--muted); font-family: var(--mono); font-size: 10.5px; }
+  .mode { font-family: var(--mono); font-size: 10.5px; }
+
+  dialog { border: 1.5px solid var(--ink); border-radius: 14px; box-shadow: 5px 5px 0 var(--ink); padding: 20px; width: 360px; background: var(--card); }
+  dialog::backdrop { background: rgba(29,26,22,.35); }
+  dialog input, dialog textarea { width: 100%; font: inherit; border: 1.5px solid var(--ink); border-radius: 9px; padding: 8px 10px; margin: 6px 0; background: var(--paper); }
+  .toast { position: fixed; bottom: 18px; left: 18px; background: var(--ink); color: var(--paper); padding: 8px 14px; border-radius: 10px; font-size: 14px; opacity: 0; transition: opacity .3s; pointer-events: none; }
+  .toast.on { opacity: 1; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="logo">huddle<span>.</span></div>
+    <div class="space-name" id="spaceName">…</div>
+    <button class="email" id="email" title="Copy the space's email">…</button>
+    <div class="tools">
+      <button data-add="note">+ Note</button>
+      <button data-add="poll">+ Poll</button>
+      <button data-add="bring">+ Bring list</button>
+      <button data-add="link">+ Link</button>
+    </div>
+    <div class="presence" id="presence"></div>
+  </header>
+
+  <div class="board-wrap"><div class="board" id="board"></div></div>
+
+  <aside>
+    <section>
+      <h2>Agents in the room <span class="mode" id="mode"></span></h2>
+      <div class="agents" id="agents"></div>
+    </section>
+    <section class="compose">
+      <h2>Forward to the space</h2>
+      <input id="mFrom" placeholder="From" />
+      <input id="mSubject" placeholder="Subject" />
+      <textarea id="mText" placeholder="Paste a receipt, a link, a plan…"></textarea>
+      <div class="row">
+        <button class="primary" id="send">Send to space</button>
+        <button class="chip" data-sample="receipt">🧾 cake receipt</button>
+        <button class="chip" data-sample="link">🔗 a link</button>
+        <button class="chip" data-sample="plan">🗓 a plan</button>
+      </div>
+    </section>
+    <section>
+      <h2>Who owes whom</h2>
+      <div class="ledger" id="ledger"></div>
+    </section>
+    <div class="feed" id="feed"></div>
+  </aside>
+</div>
+
+<dialog id="nameDlg">
+  <h3 style="margin:0 0 4px">Who are you?</h3>
+  <p style="margin:0 0 8px;color:var(--muted);font-size:14px">So the group knows who moved the cake.</p>
+  <input id="nameInput" placeholder="Your first name" />
+  <button class="primary" id="nameGo" style="margin-top:6px">Join the space</button>
+</dialog>
+
+<dialog id="addDlg">
+  <h3 id="addTitle" style="margin:0 0 6px"></h3>
+  <div id="addFields"></div>
+  <div class="row" style="margin-top:8px"><button class="primary" id="addGo">Add to space</button><button class="chip" id="addCancel">Cancel</button></div>
+</dialog>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = (s, r = document) => r.querySelector(s)
+const board = $("#board")
+let me = null
+try { me = localStorage.getItem("huddle.name") } catch {}
+const state = { cards: new Map(), members: [], status: {}, balances: {} }
+const AGENTS = { Clerk: { face: "🗂", job: "files everything that lands in the inbox" }, Treasurer: { face: "🧮", job: "splits costs, emails people back" }, Scout: { face: "🔭", job: "reads links, starts arguments" } }
+const COLORS = ["#ffb4a2", "#b8e0d2", "#ffd97d", "#c3b1e1", "#9ad1f5", "#f7a8c8"]
+const colorFor = (n) => COLORS[[...n].reduce((a, c) => a + c.charCodeAt(0), 0) % COLORS.length]
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]))
+const api = (path, body, method = "POST") => fetch(path, { method, headers: { "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined }).then((r) => r.json())
+const toast = (t) => { const el = $("#toast"); el.textContent = t; el.classList.add("on"); clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.remove("on"), 2200) }
+const ago = (t) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+
+// ── rendering cards
+function body(c) {
+  const d = c.data
+  switch (c.kind) {
+    case "note": return `<h3>${esc(d.title)}</h3><p>${esc(d.body)}</p>${d.reason ? `<div class="slip">📎 ${esc(d.reason)}</div>` : ""}`
+    case "poll": {
+      const total = d.options.reduce((a, o) => a + o.votes.length, 0) || 1
+      return `<h3>${esc(d.question)}</h3>` + d.options.map((o) => `<button class="opt ${o.votes.includes(me) ? "mine" : ""}" data-vote="${o.id}"><span class="bar" style="width:${(o.votes.length / total) * 100}%"></span><span>${esc(o.label)}</span><span class="n">${o.votes.length ? esc(o.votes.join(", ")) : "0"}</span></button>`).join("")
+    }
+    case "bring": return `<h3>${esc(d.title)}</h3>` + d.items.map((i) => `<div class="item"><span>${esc(i.label)}</span><button data-claim="${i.id}" class="${i.claimedBy ? "taken" : ""}">${i.claimedBy ? esc(i.claimedBy) : "I'll bring it"}</button></div>`).join("")
+    case "expense": {
+      const share = (d.amount / d.splitAmong.length).toFixed(2).replace(/\.00$/, "")
+      return `<span class="tag agent">filed by Clerk</span><h3 style="margin-top:6px">${esc(d.description)}</h3><div class="amount">${esc(d.currency)}${esc(d.amount)}</div><p>Paid by <b>${esc(d.payer)}</b> · ${esc(d.currency)}${share} each (${d.splitAmong.length})</p><div class="slip">📎 ${esc(d.reason)}</div>`
+    }
+    case "reply": return `<span class="tag agent">sent by Treasurer</span><h3 style="margin-top:6px">${esc(d.subject)}</h3><p style="font-size:12px;color:var(--muted)">to ${esc(d.to)} · from ${esc(d.from)}</p><p style="margin-top:6px">${esc(d.body)}</p>`
+    case "link": return `<span class="tag agent">read by Scout</span><h3 style="margin-top:6px">${esc(d.title)}</h3><p>${esc(d.summary ?? "Scout is reading…")}</p>${(d.questions ?? []).map((q) => `<div class="q">${esc(q)}</div>`).join("")}<p style="margin-top:6px"><a href="${esc(d.url)}" target="_blank" rel="noopener" style="font-size:12px;color:var(--ink)">${esc(d.url)}</a></p>`
+    case "mail": return `<span class="tag">📨 mail in</span><h3 style="margin-top:6px">${esc(d.subject)}</h3><p style="font-size:12px;color:var(--muted)">from ${esc(d.from)}</p><p style="font-family:var(--mono);font-size:12px;margin-top:6px;max-height:110px;overflow:hidden">${esc(d.text)}</p>`
+  }
+  return ""
+}
+function renderCard(c, { fresh = false } = {}) {
+  let el = document.getElementById("c-" + c.id)
+  if (!el) {
+    el = document.createElement("div")
+    el.id = "c-" + c.id
+    board.appendChild(el)
+    if (fresh) el.classList.add("fresh")
+    wireDrag(el, c.id)
+  }
+  if (c.kind === "link" && !c.data.summary) return el.remove() // human link stubs: Scout posts the real card
+  el.className = `card ${c.kind} ${c.data.color ?? ""} ${el.classList.contains("fresh") ? "fresh" : ""}`
+  if (!el.classList.contains("dragging")) { el.style.left = c.x + "px"; el.style.top = c.y + "px" }
+  if (fresh && c.kind !== "mail") setTimeout(() => el.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" }), 50)
+  el.innerHTML = `<div class="grip"><span>${esc(c.by)} · ${c.kind}</span><button class="x" data-del title="Remove">×</button></div>` + body(c)
+}
+
+// ── interactions on cards
+board.addEventListener("click", (e) => {
+  const cardEl = e.target.closest(".card"); if (!cardEl) return
+  const id = cardEl.id.slice(2)
+  const v = e.target.closest("[data-vote]"), cl = e.target.closest("[data-claim]"), del = e.target.closest("[data-del]")
+  if (v) api(`/api/cards/${id}/vote`, { optionId: v.dataset.vote, by: me })
+  if (cl) api(`/api/cards/${id}/claim`, { itemId: cl.dataset.claim, by: me })
+  if (del) api(`/api/cards/${id}`, null, "DELETE")
+})
+function wireDrag(el, id) {
+  let sx, sy, ox, oy, moving = false, last = 0
+  el.addEventListener("pointerdown", (e) => {
+    if (e.target.closest("button, a")) return
+    moving = true; el.setPointerCapture(e.pointerId); el.classList.add("dragging"); el.classList.remove("remote")
+    sx = e.clientX; sy = e.clientY; ox = parseInt(el.style.left); oy = parseInt(el.style.top)
+  })
+  el.addEventListener("pointermove", (e) => {
+    if (!moving) return
+    const x = ox + e.clientX - sx, y = oy + e.clientY - sy
+    el.style.left = x + "px"; el.style.top = y + "px"
+    if (Date.now() - last > 60) { last = Date.now(); api(`/api/cards/${id}/move`, { x, y, by: me }) }
+  })
+  const end = () => { if (!moving) return; moving = false; el.classList.remove("dragging"); api(`/api/cards/${id}/move`, { x: parseInt(el.style.left), y: parseInt(el.style.top), by: me }) }
+  el.addEventListener("pointerup", end); el.addEventListener("pointercancel", end)
+}
+
+// ── side panel
+function renderAgents() {
+  $("#agents").innerHTML = Object.entries(AGENTS).map(([name, a]) => {
+    const s = state.status[name] ?? { state: "idle" }
+    const cls = s.state === "using tool" ? "using" : s.state
+    const label = s.state === "idle" ? a.job : s.state === "using tool" ? `→ ${s.detail}()` : `${s.state}… ${s.detail ?? ""}`
+    return `<div class="ag ${cls}"><div class="face">${a.face}</div><div><b>${name}</b><small>${esc(label)}</small></div></div>`
+  }).join("")
+}
+function renderLedger() {
+  const rows = Object.entries(state.balances).filter(([, v]) => v !== 0)
+  $("#ledger").innerHTML = rows.length ? rows.map(([n, v]) => `<div><span>${esc(n)}</span><span class="${v > 0 ? "pos" : "neg"}">${v > 0 ? "is owed " : "owes "}${Math.abs(v).toFixed(2)}</span></div>`).join("") : `<div style="color:var(--muted)">All square. Forward a receipt.</div>`
+}
+function renderPresence() {
+  $("#presence").innerHTML = state.members.map((m) => `<div class="avatar" style="background:${colorFor(m)}" title="${esc(m)}">${esc(m[0])}</div>`).join("")
+}
+function addActivity(a) {
+  const el = document.createElement("div")
+  el.className = `ev ${a.role} ${a.kind}`
+  el.innerHTML = `<time>${ago(a.at)}</time><span class="who">${esc(a.who)}</span> ${a.kind === "tool" ? "→ " : ""}${esc(a.text)}`
+  const feed = $("#feed"); feed.prepend(el)
+  while (feed.children.length > 120) feed.lastChild.remove()
+}
+
+// ── live sync
+async function load() {
+  const s = await api("/api/space", null, "GET")
+  board.innerHTML = ""; state.cards.clear(); $("#feed").innerHTML = ""
+  $("#spaceName").textContent = s.name
+  $("#email").textContent = s.email
+  $("#mode").textContent = s.liveAI ? `live · ${s.model}` : "offline mode"
+  state.members = s.members; state.status = s.status; state.balances = s.balances
+  for (const c of s.cards) { state.cards.set(c.id, c); renderCard(c) }
+  s.activity.forEach(addActivity)
+  renderAgents(); renderLedger(); renderPresence()
+}
+function connect() {
+  const es = new EventSource("/api/events")
+  es.addEventListener("card", (e) => { const c = JSON.parse(e.data); const isNew = !state.cards.has(c.id); state.cards.set(c.id, c); renderCard(c, { fresh: isNew }); refreshLedger() })
+  es.addEventListener("card.removed", (e) => { const { id } = JSON.parse(e.data); state.cards.delete(id); document.getElementById("c-" + id)?.remove(); refreshLedger() })
+  es.addEventListener("move", (e) => { const m = JSON.parse(e.data); if (m.by === me) return; const el = document.getElementById("c-" + m.id); if (el && !el.classList.contains("dragging")) { el.classList.add("remote"); el.style.left = m.x + "px"; el.style.top = m.y + "px" } })
+  es.addEventListener("activity", (e) => addActivity(JSON.parse(e.data)))
+  es.addEventListener("status", (e) => { const s = JSON.parse(e.data); state.status[s.name] = s; renderAgents() })
+  es.addEventListener("members", (e) => { state.members = JSON.parse(e.data); renderPresence() })
+  es.addEventListener("ledger", (e) => { state.balances = JSON.parse(e.data); renderLedger() })
+  es.addEventListener("reset", load)
+  es.onerror = () => { es.close(); setTimeout(() => { load().then(connect) }, 1500) }
+}
+function refreshLedger() { api("/api/space", null, "GET").then((s) => { state.balances = s.balances; renderLedger() }) }
+
+// ── forwarding mail into the space
+const SAMPLES = {
+  receipt: () => ({ subject: "Fwd: Your order from Sweet Crumbs Bakery", text: "Order #4471 — Sweet Crumbs Bakery\n1 × Red velvet cake (8\")   $55.00\n1 × Candles + topper       $8.00\nTotal paid: $63.00\nPaid with Visa ending 4417\nPickup Saturday 2pm\n\n(for kemi's thing — split it between the three of us)" }),
+  link: () => ({ subject: "we should go here after", text: "https://en.wikipedia.org/wiki/Karaoke" }),
+  plan: () => ({ subject: "plan for saturday", text: "Party at Tunde's, 14 Akin Close. Arrive 6pm, Kemi gets there 7. Someone needs to bring ice and cups. Are we doing jollof or fried rice?" }),
+}
+document.querySelectorAll("[data-sample]").forEach((b) => b.onclick = () => { const s = SAMPLES[b.dataset.sample](); $("#mFrom").value = me; $("#mSubject").value = s.subject; $("#mText").value = s.text })
+$("#send").onclick = async () => {
+  const mail = { from: $("#mFrom").value || me, subject: $("#mSubject").value || "(no subject)", text: $("#mText").value }
+  if (!mail.text.trim()) return toast("Paste something first")
+  await api("/api/inbox", mail)
+  $("#mSubject").value = ""; $("#mText").value = ""
+  toast("Sent — watch the agents")
+}
+$("#email").onclick = () => { navigator.clipboard?.writeText($("#email").textContent); toast("Space email copied") }
+
+// ── adding cards
+const FORMS = {
+  note: { title: "New note", fields: [["title", "Title"], ["body", "What's up?", "textarea"]] },
+  poll: { title: "New poll", fields: [["question", "Question"], ["o1", "Option 1"], ["o2", "Option 2"], ["o3", "Option 3 (optional)"]] },
+  bring: { title: "Who's bringing what", fields: [["title", "List name"], ["items", "Items, comma separated"]] },
+  link: { title: "Drop a link — Scout will read it", fields: [["url", "https://…"]] },
+}
+let adding = null
+document.querySelectorAll("[data-add]").forEach((b) => b.onclick = () => {
+  adding = b.dataset.add; const f = FORMS[adding]
+  $("#addTitle").textContent = f.title
+  $("#addFields").innerHTML = f.fields.map(([k, ph, t]) => t ? `<textarea data-k="${k}" placeholder="${ph}"></textarea>` : `<input data-k="${k}" placeholder="${ph}" />`).join("")
+  $("#addDlg").showModal(); $("#addFields [data-k]").focus()
+})
+$("#addCancel").onclick = () => $("#addDlg").close()
+$("#addGo").onclick = async () => {
+  const v = Object.fromEntries([...document.querySelectorAll("#addFields [data-k]")].map((i) => [i.dataset.k, i.value.trim()]))
+  const wrap = $(".board-wrap")
+  const pos = { x: wrap.scrollLeft + 60 + Math.random() * 200, y: wrap.scrollTop + 60 + Math.random() * 120 }
+  const data = adding === "note" ? { title: v.title || "Note", body: v.body, color: "yellow" }
+    : adding === "poll" ? { question: v.question, options: [v.o1, v.o2, v.o3] }
+    : adding === "bring" ? { title: v.title || "Who's bringing what", items: (v.items || "").split(",").map((s) => s.trim()) }
+    : { url: v.url }
+  await api("/api/cards", { kind: adding, ...pos, by: me, data })
+  $("#addDlg").close()
+  if (adding === "link") toast("Scout is on it")
+}
+
+// ── join
+async function join(name) { me = name; try { localStorage.setItem("huddle.name", name) } catch {} ; await api("/api/join", { name }); $("#mFrom").value = name }
+$("#nameGo").onclick = async () => { const n = $("#nameInput").value.trim(); if (!n) return; await join(n); $("#nameDlg").close() }
+$("#nameInput").addEventListener("keydown", (e) => e.key === "Enter" && $("#nameGo").click())
+
+load().then(connect).then(() => { if (me) join(me); else $("#nameDlg").showModal() })
+</script>
+</body>
+</html>
