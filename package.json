@@ -3,6 +3,26 @@
   "version": "1.0.0",
   "description": "One live page for your group, with its own inbox and a crew of Mozaik agents that file everything that lands in it.",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Demiladepy/huddle.git"
+  },
+  "homepage": "https://github.com/Demiladepy/huddle#readme",
+  "bugs": {
+    "url": "https://github.com/Demiladepy/huddle/issues"
+  },
+  "author": "Demiladepy",
+  "keywords": [
+    "mozaik",
+    "ai-agents",
+    "multi-agent",
+    "agentic-ai",
+    "typescript",
+    "express",
+    "server-sent-events",
+    "realtime",
+    "hackathon"
+  ],
   "scripts": {
     "start": "tsx server.ts",
     "dev": "tsx watch server.ts",

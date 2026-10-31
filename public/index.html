@@ -51,7 +51,9 @@
   .card.note.yellow { background: var(--yellow); } .card.note.blue { background: var(--blue); }
   .card.expense { background: var(--green); }
   .card.reply { background: var(--violet); }
+  .card.reply p { display: -webkit-box; -webkit-line-clamp: 7; -webkit-box-orient: vertical; overflow: hidden; }
   .card.link { background: var(--pink); }
+  .card.link p { display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical; overflow: hidden; }
   .card.mail { background: #fff; border-style: dashed; }
   .tag { display: inline-block; font-family: var(--mono); font-size: 10.5px; padding: 2px 7px; border-radius: 999px; background: var(--ink); color: var(--paper); }
   .tag.agent { background: var(--accent); }
@@ -300,7 +302,8 @@ async function load() {
   board.innerHTML = ""; state.cards.clear(); $("#feed").innerHTML = ""
   $("#spaceName").textContent = s.name
   $("#email").textContent = s.email
-  $("#mode").textContent = (s.liveAI ? `live · ${s.model}` : "offline mode") + (s.cloud ? " · ☁ paired" : "")
+  $("#mode").textContent = (s.liveAI ? `live · ${s.model}` : "offline mode") + (s.cloud ? " · ☁" : "")
+  $("#mode").title = s.cloud ? "Streaming loops to Mozaik cloud" : "Mozaik cloud not paired"
   state.members = s.members; state.status = s.status; state.balances = s.balances; state.cloud = s.cloud
   for (const c of s.cards) { state.cards.set(c.id, c); renderCard(c) }
   s.activity.forEach(addActivity)

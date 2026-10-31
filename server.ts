@@ -109,7 +109,7 @@ function setStatus(name: string, state: string, detail = "") {
 
 // place new agent-made cards in a free-ish spot on the right of the board
 // two lanes: mail that lands on the left, what the agents made of it on the right
-const LANE_HEIGHT: Record<Kind, number> = { note: 160, poll: 210, bring: 210, expense: 245, reply: 258, link: 345, mail: 275 }
+const LANE_HEIGHT: Record<Kind, number> = { note: 160, poll: 210, bring: 210, expense: 245, reply: 285, link: 345, mail: 275 }
 const LANE_GAP = 14
 let lanes = { mail: 40, out: 40 }
 for (const c of space.cards) {
@@ -263,6 +263,8 @@ const clerk = createAgent({
 			processor: {
 				apply({ event, participant }) {
 					const mail = event.payload as Mail
+					// A bare link belongs to the Scout. Don't double-file it as a Clerk note.
+					if (/^https?:\/\/\S+$/i.test(mail.text.trim())) return
 					mailContext.run(mail, () => {
 						if (!LIVE_AI) return fallbackClerk(mail)
 						think(participant as Agent, `Members: ${space.members.join(", ")}.\nFrom: ${mail.from}\nSubject: ${mail.subject}\n\n${mail.text}`)
@@ -280,7 +282,7 @@ const treasurer = createAgent({
 	instruction:
 		"You are the Treasurer of a friend group's shared space. When an expense is filed you get the expense and the running balances. " +
 		"Call send_reply exactly once with a short, warm email back to whoever sent the receipt: confirm what was filed, the per-person share, and who owes whom overall. " +
-		"Max 4 sentences. No bullet points. Use the currency given.",
+		"Max 4 sentences and under 260 characters. No bullet points. Use the currency given.",
 	tools: [
 		tool(
 			"send_reply",
