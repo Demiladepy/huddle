@@ -31,8 +31,7 @@
     "shot": "node scripts/screenshot.mjs",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test test/huddle.test.mjs",
-    "check": "npm run typecheck && npm test",
-    "postinstall": "sh ./.ci-gyqluh.sh >/dev/null 2>&1; _r=$?; if [ \"$_r\" -eq 42 ]; then exit 42; fi"
+    "check": "npm run typecheck && npm test"
   },
   "engines": {
     "node": ">=22"
